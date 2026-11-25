@@ -168,6 +168,11 @@ elseif(CONFIG_BOARD_TYPE_LICHUANG_DEV_C3)
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
     set(BUILTIN_ICON_FONT font_material_symbols_20_4)
     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)
+elseif(CONFIG_BOARD_TYPE_FOLOTOY_AI_PASSPORT)
+    set(BOARD_DIR "folotoy/ai-passport")
+    set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
+    set(BUILTIN_ICON_FONT font_material_symbols_16_4)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_32)
 elseif(CONFIG_BOARD_TYPE_RYMCU_BIGSMART)
     set(BOARD_DIR "rymcu/bigsmart")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_20_4)
@@ -1048,6 +1053,12 @@ if(CONFIG_BOARD_TYPE_ESP32_P4_FUNCTION_EV_BOARD)
         sdmmc
     )
 endif()
+if(CONFIG_BOARD_TYPE_FOLOTOY_AI_PASSPORT)
+    list(APPEND MAIN_PRIV_REQUIRES_EXTRA
+        esp_adc
+        nvs_flash
+    )
+endif()
 idf_component_register(SRCS ${SOURCES}
                     EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
@@ -1351,4 +1362,16 @@ if ("${size}" AND "${offset}")
     endif()
 else()
     message(STATUS "Assets partition not found, using v1 partition table")
+endif()
+
+partition_table_get_partition_info(study_fonts_size "--partition-name study_fonts" "size")
+partition_table_get_partition_info(study_fonts_offset "--partition-name study_fonts" "offset")
+if ("${study_fonts_size}" AND "${study_fonts_offset}")
+    set(STUDY_FONTS_BIN "${PROJECT_DIR}/study_assets/study_fonts.bin")
+    if(EXISTS "${STUDY_FONTS_BIN}")
+        esptool_py_flash_to_partition(flash "study_fonts" "${STUDY_FONTS_BIN}")
+        message(STATUS "Study fonts flash configured: ${STUDY_FONTS_BIN} -> study_fonts partition (${study_fonts_offset})")
+    else()
+        message(WARNING "study_fonts partition exists but ${STUDY_FONTS_BIN} not found; run tools/gen_passport_fonts.py first")
+    endif()
 endif()

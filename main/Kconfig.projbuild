@@ -120,7 +120,7 @@ endchoice
 choice BOARD_TYPE
     prompt "Target Board"
     default BOARD_TYPE_BREAD_COMPACT_ESP32 if IDF_TARGET_ESP32
-    default BOARD_TYPE_XMINI_C3_V3 if IDF_TARGET_ESP32C3
+    default BOARD_TYPE_FOLOTOY_AI_PASSPORT if IDF_TARGET_ESP32C3
     default BOARD_TYPE_ESP_SENSAIRSHUTTLE if IDF_TARGET_ESP32C5
     default BOARD_TYPE_WAVESHARE_ESP32_C6_TOUCH_AMOLED_2_06 if IDF_TARGET_ESP32C6
     default BOARD_TYPE_BREAD_COMPACT_WIFI if IDF_TARGET_ESP32S3
@@ -169,6 +169,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_BREAD_COMPACT_WIFI
         bool "Bread Compact Wi-Fi (面包板)"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_FOLOTOY_AI_PASSPORT
+        bool "FoloToy AI Passport (ESP32-C3 Study Pet)"
+        depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_BREAD_COMPACT_WIFI_LCD
         bool "Bread Compact Wi-Fi + LCD (面包板)"
         depends on IDF_TARGET_ESP32S3

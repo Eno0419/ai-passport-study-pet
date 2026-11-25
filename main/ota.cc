@@ -223,6 +223,11 @@ esp_err_t Ota::CheckVersion() {
         }
 
         if (cJSON_IsString(version) && cJSON_IsString(url)) {
+#if CONFIG_BOARD_TYPE_FOLOTOY_AI_PASSPORT
+            ESP_LOGI(TAG, "Upstream firmware=%s (auto-OTA disabled for AI Passport Study Pet)",
+                     firmware_version_.c_str());
+            has_new_version_ = false;
+#else
             // Check if the version is newer, for example, 0.1.0 is newer than 0.0.1
             has_new_version_ = IsNewVersionAvailable(current_version_, firmware_version_);
             if (has_new_version_) {
@@ -235,6 +240,7 @@ esp_err_t Ota::CheckVersion() {
             if (cJSON_IsNumber(force) && force->valueint == 1) {
                 has_new_version_ = true;
             }
+#endif
         }
     } else {
         ESP_LOGW(TAG, "No firmware section found!");
