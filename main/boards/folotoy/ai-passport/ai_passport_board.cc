@@ -101,11 +101,13 @@ static void RoundedFlushEventCb(lv_event_t* event) {
 class AiPassportDisplay : public SpiLcdDisplay {
 public:
     AiPassportDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                      std::function<int()> battery_soc_provider)
+                      std::function<int()> battery_soc_provider,
+                      std::function<bool()> ai_ready_provider)
         : SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                         DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                         DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY),
-          battery_soc_provider_(std::move(battery_soc_provider)) {
+          battery_soc_provider_(std::move(battery_soc_provider)),
+          ai_ready_provider_(std::move(ai_ready_provider)) {
         if (display_ && Lock(0)) {
             lv_display_add_event_cb(display_, RoundedFlushEventCb, LV_EVENT_FLUSH_START, nullptr);
             Unlock();
@@ -114,15 +116,34 @@ public:
 
     void SetupUI() override {
         SpiLcdDisplay::SetupUI();
-        // Keep xiaozhi status_bar / bottom_bar clear of the R=30 rounded corners
+        // Keep xiaozhi top_bar / status_bar / bottom_bar clear of the R=30 rounded corners
         if (Lock(0)) {
+            if (top_bar_) {
+                lv_obj_set_style_pad_top(top_bar_, 6, 0);
+                lv_obj_set_style_pad_left(top_bar_, 26, 0);
+                lv_obj_set_style_pad_right(top_bar_, 26, 0);
+            }
             if (status_bar_) {
-                lv_obj_set_style_pad_left(status_bar_, 24, 0);
-                lv_obj_set_style_pad_right(status_bar_, 24, 0);
+                lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, 6);
+                lv_obj_set_style_pad_left(status_bar_, 26, 0);
+                lv_obj_set_style_pad_right(status_bar_, 26, 0);
+            }
+            if (status_label_) {
+                lv_obj_set_width(status_label_, 144);
+            }
+            if (notification_label_) {
+                lv_obj_set_width(notification_label_, 168);
             }
             if (bottom_bar_) {
+                lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -14);
                 lv_obj_set_style_pad_left(bottom_bar_, 24, 0);
                 lv_obj_set_style_pad_right(bottom_bar_, 24, 0);
+                lv_obj_set_style_pad_top(bottom_bar_, 4, 0);
+                lv_obj_set_style_pad_bottom(bottom_bar_, 4, 0);
+            }
+            if (chat_message_label_) {
+                lv_obj_set_width(chat_message_label_, 188);
+                lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_WRAP);
             }
             Unlock();
         }
@@ -130,11 +151,14 @@ public:
         // IMPORTANT: Use the immortal static Flash BUILTIN_TEXT_FONT as fallback!
         // Never use current_theme_->text_font()->font(), which points to a heap-allocated
         // LvglBuiltInFont::font_ copy that gets freed when Assets::Apply() refreshes the theme.
-        StudyCardPassport::GetInstance().Initialize(&BUILTIN_TEXT_FONT, battery_soc_provider_);
+        StudyCardPassport::GetInstance().Initialize(&BUILTIN_TEXT_FONT,
+                                                    battery_soc_provider_,
+                                                    ai_ready_provider_);
     }
 
 private:
     std::function<int()> battery_soc_provider_;
+    std::function<bool()> ai_ready_provider_;
 };
 
 // Shared 3-key ADC resistor ladder driver with key-lock debounce
@@ -253,7 +277,14 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y));
 
-        display_ = new AiPassportDisplay(panel_io, panel, [this]() { return battery_.ReadSoc(); });
+        display_ = new AiPassportDisplay(
+            panel_io, panel,
+            [this]() { return battery_.ReadSoc(); },
+            []() {
+                auto st = Application::GetInstance().GetDeviceState();
+                return st == kDeviceStateIdle || st == kDeviceStateListening ||
+                       st == kDeviceStateSpeaking;
+            });
     }
 
     void DispatchKeyEvent(PassportKey key, PassportKeyEvent ev) {
@@ -263,14 +294,15 @@ private:
             StudyAction act = StudyCardPassport::GetInstance().HandleKey(key, ev);
             switch (act) {
                 case StudyAction::kToggleVoiceChat:
-                    if (app.GetDeviceState() == kDeviceStateStarting) {
-                        EnterWifiConfigMode();
-                    } else {
-                        app.ToggleChatState();
-                    }
+                    app.ToggleChatState();
                     break;
                 case StudyAction::kStartVoiceFollowUp:
                     app.ToggleChatState();
+                    break;
+                case StudyAction::kShowNetworkSetup:
+                    if (display_) {
+                        display_->ShowNotification("短按确定键返回识字", 3000);
+                    }
                     break;
                 case StudyAction::kEnterWifiConfig:
                     EnterWifiConfigMode();
@@ -308,6 +340,7 @@ private:
                         display_->ShowNotification(buf, 2000);
                     }
                     break;
+                case StudyAction::kNextCardWithStar:
                 case StudyAction::kRenderView:
                 case StudyAction::kCloseToPetHome:
                 case StudyAction::kNone:

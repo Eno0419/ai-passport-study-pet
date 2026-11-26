@@ -28,11 +28,13 @@ StudyCardPassport::~StudyCardPassport() {
 }
 
 void StudyCardPassport::Initialize(const lv_font_t* builtin_fallback_font,
-                                   std::function<int()> battery_soc_provider) {
+                                   std::function<int()> battery_soc_provider,
+                                   std::function<bool()> ai_ready_provider) {
     if (initialized_) {
         return;
     }
     battery_soc_provider_ = std::move(battery_soc_provider);
+    ai_ready_provider_ = std::move(ai_ready_provider);
     fonts_.Initialize(builtin_fallback_font);
 
     std::vector<StudyItem> saved_items;
@@ -40,6 +42,9 @@ void StudyCardPassport::Initialize(const lv_font_t* builtin_fallback_font,
     if (StudyBookNvs::Load(saved_items, saved_stars)) {
         sm_.LoadSaved(std::move(saved_items), saved_stars);
     }
+    // Open StudyCard immediately on boot so the user can browse, zoom, and practice
+    // starter/saved cards right away instead of getting blocked on Wi-Fi or pairing screens.
+    sm_.OpenStudyCard();
 
     esp_timer_create_args_t timer_args = {
         .callback = OnAutoHideTimer,
@@ -52,6 +57,7 @@ void StudyCardPassport::Initialize(const lv_font_t* builtin_fallback_font,
 
     if (lvgl_port_lock(0)) {
         CreateOverlayLocked();
+        RenderCurrentViewLocked();
         lvgl_port_unlock();
     }
 
@@ -73,7 +79,6 @@ void StudyCardPassport::CreateOverlayLocked() {
     lv_obj_set_style_radius(overlay_, 0, 0);
     lv_obj_set_style_pad_all(overlay_, 0, 0);
     lv_obj_clear_flag(overlay_, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(overlay_, LV_OBJ_FLAG_HIDDEN);
 
     // Top bar (y=8..28, strictly within R=30 safe horizontal zone [28..212])
     top_star_lbl_ = lv_label_create(overlay_);
@@ -85,10 +90,10 @@ void StudyCardPassport::CreateOverlayLocked() {
     top_page_lbl_ = lv_label_create(overlay_);
     lv_obj_set_style_text_font(top_page_lbl_, ui_font, 0);
     lv_obj_set_style_text_color(top_page_lbl_, lv_color_hex(0x64748B), 0);
-    lv_obj_set_width(top_page_lbl_, 76);
+    lv_obj_set_width(top_page_lbl_, 80);
     lv_obj_set_style_text_align(top_page_lbl_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(top_page_lbl_, (kScreenW - 76) / 2, 8);
-    lv_label_set_text(top_page_lbl_, "1/1");
+    lv_obj_set_pos(top_page_lbl_, (kScreenW - 80) / 2, 8);
+    lv_label_set_text(top_page_lbl_, "1/12");
 
     top_batt_lbl_ = lv_label_create(overlay_);
     lv_obj_set_style_text_font(top_batt_lbl_, ui_font, 0);
@@ -128,7 +133,7 @@ void StudyCardPassport::CreateOverlayLocked() {
     lv_obj_set_width(footer_lbl_, kSafeW);
     lv_obj_set_style_text_align(footer_lbl_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(footer_lbl_, kCornerSafeX, 293);
-    lv_label_set_text(footer_lbl_, "▲▼翻页  ●写好了");
+    lv_label_set_text(footer_lbl_, "▲▼换字 ●写好 长按AI");
 }
 
 lv_obj_t* StudyCardPassport::CreateTianzigeBox(lv_obj_t* parent, int32_t size,
@@ -168,9 +173,15 @@ lv_obj_t* StudyCardPassport::CreateTianzigeBox(lv_obj_t* parent, int32_t size,
     return box;
 }
 
-void StudyCardPassport::RenderTopBarLocked() {
+void StudyCardPassport::RenderTopBarLocked(bool flash_star) {
     char buf[32];
-    snprintf(buf, sizeof(buf), "★%lu", (unsigned long)sm_.star_count());
+    if (flash_star) {
+        snprintf(buf, sizeof(buf), "★%lu+1", (unsigned long)sm_.star_count());
+        lv_obj_set_style_text_color(top_star_lbl_, lv_color_hex(0xEA580C), 0);
+    } else {
+        snprintf(buf, sizeof(buf), "★%lu", (unsigned long)sm_.star_count());
+        lv_obj_set_style_text_color(top_star_lbl_, lv_color_hex(0xD97706), 0);
+    }
     lv_label_set_text(top_star_lbl_, buf);
 
     if (sm_.view() == StudyView::kWordbook) {
@@ -192,7 +203,6 @@ void StudyCardPassport::RenderTopBarLocked() {
 }
 
 void StudyCardPassport::RenderHanziLocked(const StudyItem& item, bool zoomed) {
-    // Pinyin centered near top (y=4..26)
     if (!item.sub.empty()) {
         lv_obj_t* py_lbl = lv_label_create(content_area_);
         lv_obj_set_style_text_font(py_lbl, fonts_.ui16(), 0);
@@ -203,7 +213,6 @@ void StudyCardPassport::RenderHanziLocked(const StudyItem& item, bool zoomed) {
         lv_label_set_text(py_lbl, item.sub.c_str());
     }
 
-    // Center: 144x144 Tianzige with 76px Kaiti SC Regular
     constexpr int32_t kBoxSize = 144;
     int32_t box_y = item.sub.empty() ? 14 : 30;
     lv_obj_t* box = CreateTianzigeBox(content_area_, kBoxSize, grid_h_pts_[0], grid_v_pts_[0]);
@@ -215,7 +224,6 @@ void StudyCardPassport::RenderHanziLocked(const StudyItem& item, bool zoomed) {
     lv_label_set_text(ch_lbl, item.text.c_str());
     lv_obj_center(ch_lbl);
 
-    // Bottom hint (部首 / 笔画 / 组词)
     if (!item.hint.empty()) {
         lv_obj_t* hint_lbl = lv_label_create(content_area_);
         lv_obj_set_style_text_font(hint_lbl, fonts_.ui16(), 0);
@@ -228,7 +236,13 @@ void StudyCardPassport::RenderHanziLocked(const StudyItem& item, bool zoomed) {
         lv_label_set_text(hint_lbl, item.hint.c_str());
     }
 
-    lv_label_set_text(footer_lbl_, zoomed ? "▲▼换字  ●回整词" : "▲▼翻页  ●写好了");
+    if (zoomed) {
+        lv_label_set_text(footer_lbl_, "▲▼换字  ●回整词");
+    } else if (IsAiReady()) {
+        lv_label_set_text(footer_lbl_, "▲▼换字 ●写好 长按问");
+    } else {
+        lv_label_set_text(footer_lbl_, "▲▼换字 ●写好 长按AI");
+    }
 }
 
 void StudyCardPassport::RenderPhraseLocked(const StudyItem& item) {
@@ -246,7 +260,6 @@ void StudyCardPassport::RenderPhraseLocked(const StudyItem& item) {
 
     int32_t hint_y = 192;
     if (chars.size() == 2) {
-        // 2 characters side-by-side: 96x96 each
         constexpr int32_t box_sz = 96;
         constexpr int32_t gap = 14;
         int32_t start_x = (kScreenW - (box_sz * 2 + gap)) / 2;
@@ -262,7 +275,6 @@ void StudyCardPassport::RenderPhraseLocked(const StudyItem& item) {
         }
         hint_y = box_y + box_sz + 18;
     } else if (chars.size() <= 4) {
-        // 3~4 characters in 2x2 Tianzige grid: 80x80 each
         constexpr int32_t box_sz = 80;
         constexpr int32_t gap = 10;
         int32_t start_x = (kScreenW - (box_sz * 2 + gap)) / 2;
@@ -280,7 +292,6 @@ void StudyCardPassport::RenderPhraseLocked(const StudyItem& item) {
         }
         hint_y = start_y + box_sz * 2 + gap + 8;
     } else if (chars.size() <= kMaxGridBoxes) {
-        // 5~6 characters in 3x2 grid: 66x66 each
         constexpr int32_t box_sz = 66;
         constexpr int32_t gap = 8;
         int32_t start_x = (kScreenW - (box_sz * 3 + gap * 2)) / 2;
@@ -325,8 +336,6 @@ void StudyCardPassport::RenderPhraseLocked(const StudyItem& item) {
 }
 
 void StudyCardPassport::RenderEnglishLocked(const StudyItem& item) {
-    // Primary-school 4-line 3-space staff aligned to latin_36 (lh=43, bl=8 -> ascent=35)
-    // word top y=56 -> top=56, x-height~70, baseline=91, descender=104
     const int32_t ys[4] = {56, 71, 91, 105};
     const uint32_t colors[4] = {0x93C5FD, 0xCBD5E1, 0xF87171, 0x93C5FD};
     const bool dashed[4] = {false, true, false, false};
@@ -376,7 +385,11 @@ void StudyCardPassport::RenderEnglishLocked(const StudyItem& item) {
         lv_label_set_text(hint_lbl, item.hint.c_str());
     }
 
-    lv_label_set_text(footer_lbl_, "▲▼翻页  ●写好了");
+    if (IsAiReady()) {
+        lv_label_set_text(footer_lbl_, "▲▼换字 ●写好 长按问");
+    } else {
+        lv_label_set_text(footer_lbl_, "▲▼换字 ●写好 长按AI");
+    }
 }
 
 void StudyCardPassport::RenderWordbookLocked() {
@@ -387,7 +400,7 @@ void StudyCardPassport::RenderWordbookLocked() {
         lv_obj_set_style_text_color(empty_lbl, lv_color_hex(0x94A3B8), 0);
         lv_label_set_text(empty_lbl, "还没有生字记录");
         lv_obj_center(empty_lbl);
-        lv_label_set_text(footer_lbl_, "长按●返回宠物页");
+        lv_label_set_text(footer_lbl_, "长按●返回");
         return;
     }
 
@@ -456,7 +469,7 @@ void StudyCardPassport::RenderCardLocked() {
     }
 }
 
-void StudyCardPassport::RenderCurrentViewLocked() {
+void StudyCardPassport::RenderCurrentViewLocked(bool flash_star) {
     if (!overlay_ || !content_area_) {
         return;
     }
@@ -471,7 +484,7 @@ void StudyCardPassport::RenderCurrentViewLocked() {
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 
     lv_obj_clean(content_area_);
-    RenderTopBarLocked();
+    RenderTopBarLocked(flash_star);
     if (sm_.view() == StudyView::kWordbook) {
         RenderWordbookLocked();
     } else {
@@ -493,8 +506,13 @@ void StudyCardPassport::HideLocked() {
 }
 
 void StudyCardPassport::ResetAutoHideTimer() {
-    if (auto_hide_timer_) {
-        esp_timer_stop(auto_hide_timer_);
+    if (!auto_hide_timer_) {
+        return;
+    }
+    esp_timer_stop(auto_hide_timer_);
+    // Only auto-return to AI Pet Home after 3 minutes when Xiaozhi AI is bound & ready.
+    // While offline/unbound, keep the StudyCard visible so it never reverts to a pairing screen.
+    if (IsAiReady()) {
         esp_timer_start_once(auto_hide_timer_, kAutoHideUs);
     }
 }
@@ -537,7 +555,7 @@ uint32_t StudyCardPassport::RewardStar(const std::string& reason) {
     PersistNvs();
     ESP_LOGI(TAG, "Star rewarded (+1 -> %lu): %s", (unsigned long)total, reason.c_str());
     if (initialized_ && sm_.view() != StudyView::kPetHome && lvgl_port_lock(0)) {
-        RenderTopBarLocked();
+        RenderTopBarLocked(/*flash_star=*/true);
         lvgl_port_unlock();
     }
     return total;
@@ -547,13 +565,19 @@ StudyAction StudyCardPassport::HandleKey(PassportKey key, PassportKeyEvent ev) {
     if (!initialized_) {
         return StudyAction::kNone;
     }
-    StudyAction act = sm_.HandleKey(key, ev);
+    StudyAction act = sm_.HandleKey(key, ev, IsAiReady());
     if (act == StudyAction::kRenderView) {
         if (lvgl_port_lock(0)) {
             RenderCurrentViewLocked();
             lvgl_port_unlock();
         }
-    } else if (act == StudyAction::kCloseToPetHome) {
+    } else if (act == StudyAction::kNextCardWithStar) {
+        PersistNvs();
+        if (lvgl_port_lock(0)) {
+            RenderCurrentViewLocked(/*flash_star=*/true);
+            lvgl_port_unlock();
+        }
+    } else if (act == StudyAction::kCloseToPetHome || act == StudyAction::kShowNetworkSetup) {
         if (lvgl_port_lock(0)) {
             HideLocked();
             lvgl_port_unlock();
@@ -570,7 +594,7 @@ StudyAction StudyCardPassport::HandleKey(PassportKey key, PassportKeyEvent ev) {
 
 void StudyCardPassport::OnAutoHideTimer(void* arg) {
     auto* self = static_cast<StudyCardPassport*>(arg);
-    if (self && self->IsOverlayVisible()) {
+    if (self && self->IsOverlayVisible() && self->IsAiReady()) {
         ESP_LOGI(TAG, "Auto-hiding study overlay after 3-minute timeout");
         self->Hide();
     }

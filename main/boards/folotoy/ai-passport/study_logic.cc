@@ -134,7 +134,6 @@ size_t DecodeRle2ToA8(const uint8_t* src, size_t src_len,
         }
     }
 
-    // Zero-fill any tail if stream ended early
     while (produced < total) {
         emit_pixel(0);
     }
@@ -185,11 +184,31 @@ void StudyStateMachine::EnsureStarterItems() {
     if (!items_.empty()) {
         return;
     }
+    // 12 curated primary-school Hanzi, Phrase, and English cards so the device is
+    // immediately fun and educational right out of the box, even offline.
     items_.push_back({"hanzi", "勇", "yǒng", "部首：力 · 9画\n组词：勇敢 · 勇气", 1});
     items_.push_back({"phrase", "蝴蝶", "hú dié", "美丽的昆虫，翅膀上有彩色花纹", 1});
     items_.push_back({"english", "butterfly", "/ˈbʌtəflaɪ/", "蝴蝶 · Cute butterfly!", 1});
+    items_.push_back({"hanzi", "暖", "nuǎn", "部首：日 · 13画\n组词：温暖 · 暖和", 1});
+    items_.push_back({"phrase", "春暖花开", "chūn nuǎn huā kāi", "长按▲可逐字放大看田字格", 1});
+    items_.push_back({"english", "rainbow", "/ˈreɪnbəʊ/", "彩虹 · Colorful rainbow!", 1});
+    items_.push_back({"hanzi", "赢", "yíng", "部首：贝 · 17画\n记法：亡口月贝凡", 1});
+    items_.push_back({"phrase", "勇敢", "yǒng gǎn", "不怕困难，敢于尝试", 1});
+    items_.push_back({"english", "apple", "/ˈæpl/", "苹果 · A sweet red apple", 1});
+    items_.push_back({"hanzi", "星", "xīng", "部首：日 · 9画\n组词：星星 · 星空", 1});
+    items_.push_back({"phrase", "开心", "kāi xīn", "心情快乐舒畅，笑眯眯", 1});
+    items_.push_back({"english", "star", "/stɑː/", "星星 · Twinkle little star", 1});
     cursor_ = 0;
     zoom_char_index_ = -1;
+}
+
+void StudyStateMachine::OpenStudyCard() {
+    EnsureStarterItems();
+    if (cursor_ < 0 || cursor_ >= static_cast<int>(items_.size())) {
+        cursor_ = 0;
+    }
+    zoom_char_index_ = -1;
+    view_ = StudyView::kStudyCard;
 }
 
 bool StudyStateMachine::PushAndShow(const std::string& req_mode, const std::string& text,
@@ -204,7 +223,6 @@ bool StudyStateMachine::PushAndShow(const std::string& req_mode, const std::stri
     item.hint = hint;
     item.ask_count = 1;
 
-    // Deduplicate by text: move to back and bump ask_count
     auto it = std::find_if(items_.begin(), items_.end(),
                            [&](const StudyItem& e) { return e.text == item.text; });
     if (it != items_.end()) {
@@ -258,15 +276,20 @@ StudyItem StudyStateMachine::EffectiveDisplayItem() const {
     return *cur;
 }
 
-StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
+StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev, bool ai_ready) {
     if (view_ == StudyView::kPetHome) {
         if (key == PassportKey::kOk) {
             if (ev == PassportKeyEvent::kClick) {
+                if (!ai_ready) {
+                    // Never trap user on Wi-Fi / pairing-code screen: OK returns to StudyCard!
+                    OpenStudyCard();
+                    return StudyAction::kRenderView;
+                }
                 return StudyAction::kToggleVoiceChat;
             }
             if (ev == PassportKeyEvent::kDoubleClick) {
                 EnsureStarterItems();
-                if (cursor_ < 0) cursor_ = static_cast<int>(items_.size()) - 1;
+                if (cursor_ < 0) cursor_ = 0;
                 zoom_char_index_ = -1;
                 view_ = StudyView::kWordbook;
                 return StudyAction::kRenderView;
@@ -276,10 +299,7 @@ StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
             }
         } else if (key == PassportKey::kUp) {
             if (ev == PassportKeyEvent::kClick) {
-                EnsureStarterItems();
-                if (cursor_ < 0) cursor_ = static_cast<int>(items_.size()) - 1;
-                zoom_char_index_ = -1;
-                view_ = StudyView::kStudyCard;
+                OpenStudyCard();
                 return StudyAction::kRenderView;
             }
             if (ev == PassportKeyEvent::kLongPress) {
@@ -288,7 +308,7 @@ StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
         } else if (key == PassportKey::kDown) {
             if (ev == PassportKeyEvent::kClick) {
                 EnsureStarterItems();
-                if (cursor_ < 0) cursor_ = static_cast<int>(items_.size()) - 1;
+                if (cursor_ < 0) cursor_ = 0;
                 zoom_char_index_ = -1;
                 view_ = StudyView::kWordbook;
                 return StudyAction::kRenderView;
@@ -304,16 +324,29 @@ StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
         if (key == PassportKey::kOk) {
             if (ev == PassportKeyEvent::kClick) {
                 if (zoom_char_index_ >= 0) {
-                    // Exit single-char zoom back to full phrase card first
                     zoom_char_index_ = -1;
                     return StudyAction::kRenderView;
                 }
                 AddStar(1);
-                view_ = StudyView::kPetHome;
-                return StudyAction::kCloseAndRewardStar;
+                if (ai_ready) {
+                    view_ = StudyView::kPetHome;
+                    return StudyAction::kCloseAndRewardStar;
+                }
+                // Offline / unbound: celebrate star and advance to the next card smoothly!
+                if (!items_.empty()) {
+                    const int n = static_cast<int>(items_.size());
+                    cursor_ = (cursor_ + 1) % n;
+                }
+                return StudyAction::kNextCardWithStar;
             }
             if (ev == PassportKeyEvent::kLongPress) {
-                return StudyAction::kStartVoiceFollowUp;
+                if (ai_ready) {
+                    return StudyAction::kStartVoiceFollowUp;
+                }
+                // Offline / unbound: show Wi-Fi / Xiaozhi pairing screen on explicit request
+                zoom_char_index_ = -1;
+                view_ = StudyView::kPetHome;
+                return StudyAction::kShowNetworkSetup;
             }
             if (ev == PassportKeyEvent::kDoubleClick) {
                 zoom_char_index_ = -1;
@@ -323,17 +356,20 @@ StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
         } else if (key == PassportKey::kUp || key == PassportKey::kDown) {
             const int dir = (key == PassportKey::kUp) ? -1 : 1;
             const StudyItem* cur = CurrentItem();
-            if (ev == PassportKeyEvent::kLongPress && cur && cur->mode == "phrase") {
-                auto chars = study_logic::SplitUtf8(cur->text);
-                if (chars.size() > 1) {
-                    if (zoom_char_index_ < 0) {
-                        zoom_char_index_ = (dir > 0) ? 0 : static_cast<int>(chars.size()) - 1;
-                    } else {
-                        zoom_char_index_ = (zoom_char_index_ + dir + static_cast<int>(chars.size())) %
-                                           static_cast<int>(chars.size());
+            if (ev == PassportKeyEvent::kLongPress) {
+                if (cur && cur->mode == "phrase") {
+                    auto chars = study_logic::SplitUtf8(cur->text);
+                    if (chars.size() > 1) {
+                        if (zoom_char_index_ < 0) {
+                            zoom_char_index_ = (dir > 0) ? 0 : static_cast<int>(chars.size()) - 1;
+                        } else {
+                            zoom_char_index_ = (zoom_char_index_ + dir + static_cast<int>(chars.size())) %
+                                               static_cast<int>(chars.size());
+                        }
+                        return StudyAction::kRenderView;
                     }
-                    return StudyAction::kRenderView;
                 }
+                return (key == PassportKey::kUp) ? StudyAction::kVolumeUp : StudyAction::kVolumeDown;
             }
             if (ev == PassportKeyEvent::kClick && !items_.empty()) {
                 if (zoom_char_index_ >= 0 && cur && cur->mode == "phrase") {
@@ -372,8 +408,12 @@ StudyAction StudyStateMachine::HandleKey(PassportKey key, PassportKeyEvent ev) {
         }
         if (ev == PassportKeyEvent::kLongPress || ev == PassportKeyEvent::kDoubleClick) {
             zoom_char_index_ = -1;
-            view_ = StudyView::kPetHome;
-            return StudyAction::kCloseToPetHome;
+            if (ai_ready) {
+                view_ = StudyView::kPetHome;
+                return StudyAction::kCloseToPetHome;
+            }
+            view_ = StudyView::kStudyCard;
+            return StudyAction::kRenderView;
         }
     }
     return StudyAction::kNone;

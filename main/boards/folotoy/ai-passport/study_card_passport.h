@@ -19,8 +19,11 @@ public:
     }
 
     // Call once after LVGL display is ready (outside LVGL lock).
+    // Launches directly into the offline-ready StudyCard so the device is immediately
+    // usable without waiting for Wi-Fi or cloud pairing.
     void Initialize(const lv_font_t* builtin_fallback_font,
-                    std::function<int()> battery_soc_provider);
+                    std::function<int()> battery_soc_provider,
+                    std::function<bool()> ai_ready_provider);
 
     // Thread-safe methods callable from MCP / app / button tasks.
     void Show(const std::string& mode, const std::string& text,
@@ -43,9 +46,10 @@ private:
     StudyCardPassport(const StudyCardPassport&) = delete;
     StudyCardPassport& operator=(const StudyCardPassport&) = delete;
 
+    bool IsAiReady() const { return ai_ready_provider_ && ai_ready_provider_(); }
     void CreateOverlayLocked();
-    void RenderCurrentViewLocked();
-    void RenderTopBarLocked();
+    void RenderCurrentViewLocked(bool flash_star = false);
+    void RenderTopBarLocked(bool flash_star = false);
     void RenderCardLocked();
     void RenderHanziLocked(const StudyItem& item, bool zoomed);
     void RenderPhraseLocked(const StudyItem& item);
@@ -63,6 +67,7 @@ private:
     StudyFontPack fonts_;
     StudyStateMachine sm_;
     std::function<int()> battery_soc_provider_;
+    std::function<bool()> ai_ready_provider_;
 
     lv_obj_t* overlay_ = nullptr;
     lv_obj_t* top_star_lbl_ = nullptr;

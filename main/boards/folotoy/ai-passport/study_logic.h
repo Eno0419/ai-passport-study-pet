@@ -34,14 +34,16 @@ enum class PassportKeyEvent : uint8_t {
 
 enum class StudyAction : uint8_t {
     kNone = 0,
-    kToggleVoiceChat,      // OK click on PetHome -> toggle chat
-    kStartVoiceFollowUp,   // OK long-press on StudyCard -> ask follow-up without closing card
-    kEnterWifiConfig,      // OK long-press on PetHome -> enter Wi-Fi config
-    kVolumeUp,             // UP long-press on PetHome
-    kVolumeDown,           // DOWN long-press on PetHome
-    kRenderView,           // Re-render current view (Card or Wordbook)
-    kCloseToPetHome,       // Close overlay back to PetHome
-    kCloseAndRewardStar,   // "写好了": close overlay, +1 star, celebrate
+    kToggleVoiceChat,        // OK click on PetHome when AI ready -> toggle voice chat
+    kStartVoiceFollowUp,     // OK long-press on StudyCard when AI ready -> ask follow-up
+    kShowNetworkSetup,       // OK long-press on StudyCard when offline -> show Wi-Fi/binding screen
+    kEnterWifiConfig,        // OK long-press on PetHome -> enter Wi-Fi config AP
+    kVolumeUp,               // UP long-press (PetHome or non-phrase card)
+    kVolumeDown,             // DOWN long-press (PetHome or non-phrase card)
+    kRenderView,             // Re-render current view (Card or Wordbook)
+    kNextCardWithStar,       // Offline/unbound OK click on card -> +1 star & advance to next card
+    kCloseToPetHome,         // Close overlay back to PetHome / setup screen
+    kCloseAndRewardStar,     // Online OK click on card -> +1 star & close to PetHome
 };
 
 namespace study_logic {
@@ -53,7 +55,6 @@ std::string DetectMode(const std::string& req_mode, const std::string& text);
 uint32_t Crc32(const uint8_t* data, size_t len);
 
 // Decode 2bpp RLE stream (SFP2 encoding=1) into A8 opacity rows with target stride.
-// Returns number of decoded pixels.
 size_t DecodeRle2ToA8(const uint8_t* src, size_t src_len,
                       uint16_t box_w, uint16_t box_h,
                       uint8_t* dst, uint32_t dst_stride);
@@ -73,6 +74,9 @@ public:
     void LoadSaved(std::vector<StudyItem> items, uint32_t star_count);
     void EnsureStarterItems();
 
+    // Open StudyCard immediately (used on boot so users can study offline right away).
+    void OpenStudyCard();
+
     // Add or update an item and show it on StudyCard. Returns true if history changed.
     bool PushAndShow(const std::string& req_mode, const std::string& text,
                      const std::string& sub, const std::string& hint);
@@ -83,8 +87,9 @@ public:
     // Reward star (from MCP self.pet.reward_star or finishing a card).
     uint32_t AddStar(uint32_t delta = 1);
 
-    // Handle a 3-key event and return the high-level action for the board/UI layer.
-    StudyAction HandleKey(PassportKey key, PassportKeyEvent ev);
+    // Handle a 3-key event. `ai_ready` is true when online & bound to Xiaozhi AI
+    // (idle/listening/speaking), and false during Wi-Fi setup or pairing-code screen.
+    StudyAction HandleKey(PassportKey key, PassportKeyEvent ev, bool ai_ready = true);
 
     StudyView view() const { return view_; }
     const std::vector<StudyItem>& items() const { return items_; }

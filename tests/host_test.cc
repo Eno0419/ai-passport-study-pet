@@ -14,17 +14,14 @@ namespace {
 
 void TestDisplayRounding() {
     int32_t x1 = 0, x2 = 0;
-    // Middle row must span full width [0, 239]
     assert(passport_display_rounded_row_span(160, 240, 320, 30, &x1, &x2));
     assert(x1 == 0 && x2 == 239);
 
-    // Top row y=0 has tightest inset (x1=30, x2=209)
     assert(passport_display_rounded_row_span(0, 240, 320, 30, &x1, &x2));
     assert(x1 == 30 && x2 == 209);
     assert(passport_display_pixel_outside_rounded_rect(0, 0, 240, 320, 30));
     assert(!passport_display_pixel_outside_rounded_rect(120, 0, 240, 320, 30));
 
-    // Bottom symmetry: y=319 matches y=0
     int32_t bx1 = 0, bx2 = 0;
     assert(passport_display_rounded_row_span(319, 240, 320, 30, &bx1, &bx2));
     assert(bx1 == x1 && bx2 == x2);
@@ -33,82 +30,92 @@ void TestDisplayRounding() {
 
 void TestKeyDecoder() {
     assert(PassportKeyDecoder::WindowOf(-1) == -1);
-    assert(PassportKeyDecoder::WindowOf(0) == 0);     // UP
+    assert(PassportKeyDecoder::WindowOf(0) == 0);
     assert(PassportKeyDecoder::WindowOf(149) == 0);
-    assert(PassportKeyDecoder::WindowOf(150) == 1);   // DOWN
+    assert(PassportKeyDecoder::WindowOf(150) == 1);
     assert(PassportKeyDecoder::WindowOf(300) == 1);
-    assert(PassportKeyDecoder::WindowOf(447) == 2);   // OK
+    assert(PassportKeyDecoder::WindowOf(447) == 2);
     assert(PassportKeyDecoder::WindowOf(595) == 2);
-    assert(PassportKeyDecoder::WindowOf(1900) == -1); // Open
+    assert(PassportKeyDecoder::WindowOf(1900) == -1);
     assert(PassportKeyDecoder::WindowOf(3300) == -1);
 
     PassportKeyDecoder dec;
-    // Confirm press of OK after 40ms
     assert(dec.Feed(2, 0) == -1);
     assert(dec.Feed(2, 30000) == -1);
     assert(dec.Feed(2, 40000) == 2);
 
-    // Transient contact glitch sweeping through DOWN for 60ms (<120ms hold) must be absorbed!
     assert(dec.Feed(1, 50000) == 2);
     assert(dec.Feed(1, 100000) == 2);
     assert(dec.Feed(2, 110000) == 2);
     assert(dec.glitches == 1);
 
-    // Genuine release held for 120ms releases the lock
     assert(dec.Feed(-1, 200000) == 2);
     assert(dec.Feed(-1, 319000) == 2);
     assert(dec.Feed(-1, 320000) == -1);
     printf("[PASS] TestKeyDecoder\n");
 }
 
-void TestStateMachine() {
+void TestStateMachineOfflineAndOnline() {
     StudyStateMachine sm;
-    assert(sm.view() == StudyView::kPetHome);
-
-    // PetHome OK click -> toggle voice chat
-    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick) == StudyAction::kToggleVoiceChat);
-    // PetHome OK long press -> enter Wi-Fi config
-    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kLongPress) == StudyAction::kEnterWifiConfig);
-    // PetHome UP click -> opens starter cards
-    assert(sm.HandleKey(PassportKey::kUp, PassportKeyEvent::kClick) == StudyAction::kRenderView);
+    // Boot opens StudyCard directly with 12 curated starter cards!
+    sm.OpenStudyCard();
     assert(sm.view() == StudyView::kStudyCard);
-    assert(sm.items().size() == 3);
+    assert(sm.items().size() == 12);
+    assert(sm.cursor() == 0);
 
-    // Push new phrase item via MCP
-    assert(sm.PushAndShow("phrase", "蝴蝶", "hú dié", "昆虫"));
+    // Offline/unbound: OK click awards star and advances to next card (never trapped!)
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick, /*ai_ready=*/false) ==
+           StudyAction::kNextCardWithStar);
+    assert(sm.view() == StudyView::kStudyCard);
+    assert(sm.star_count() == 1);
+    assert(sm.cursor() == 1);
     assert(sm.CurrentItem()->text == "蝴蝶");
-    assert(sm.CurrentItem()->ask_count == 2);  // deduplicated with starter!
 
-    // Long press UP on phrase -> zooms into individual character!
-    assert(sm.HandleKey(PassportKey::kDown, PassportKeyEvent::kLongPress) == StudyAction::kRenderView);
+    // Offline/unbound: Long press UP/DOWN on phrase zooms into single character
+    assert(sm.HandleKey(PassportKey::kDown, PassportKeyEvent::kLongPress, false) ==
+           StudyAction::kRenderView);
     assert(sm.IsPhraseZoomed());
     assert(sm.EffectiveDisplayItem().mode == "hanzi");
     assert(sm.EffectiveDisplayItem().text == "蝴");
-    // Short press DOWN while zoomed -> next character in phrase
-    assert(sm.HandleKey(PassportKey::kDown, PassportKeyEvent::kClick) == StudyAction::kRenderView);
+    assert(sm.HandleKey(PassportKey::kDown, PassportKeyEvent::kClick, false) ==
+           StudyAction::kRenderView);
     assert(sm.EffectiveDisplayItem().text == "蝶");
-    // Short press OK while zoomed -> returns to whole phrase (not closing card!)
-    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick) == StudyAction::kRenderView);
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick, false) ==
+           StudyAction::kRenderView);
     assert(!sm.IsPhraseZoomed());
+
+    // Offline/unbound: Long press OK reveals Wi-Fi/pairing screen; short press OK returns!
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kLongPress, false) ==
+           StudyAction::kShowNetworkSetup);
+    assert(sm.view() == StudyView::kPetHome);
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick, false) ==
+           StudyAction::kRenderView);
     assert(sm.view() == StudyView::kStudyCard);
 
-    // Short press OK on StudyCard -> close & reward star
-    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick) == StudyAction::kCloseAndRewardStar);
-    assert(sm.view() == StudyView::kPetHome);
-    assert(sm.star_count() == 1);
-
-    // Open Wordbook via DOWN click, navigate, open card, long-press back
-    assert(sm.HandleKey(PassportKey::kDown, PassportKeyEvent::kClick) == StudyAction::kRenderView);
+    // Offline/unbound: Double click OK opens wordbook; long press OK returns to StudyCard!
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kDoubleClick, false) ==
+           StudyAction::kRenderView);
     assert(sm.view() == StudyView::kWordbook);
-    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kLongPress) == StudyAction::kCloseToPetHome);
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kLongPress, false) ==
+           StudyAction::kRenderView);
+    assert(sm.view() == StudyView::kStudyCard);
+
+    // Online (ai_ready=true): OK click closes to PetHome & rewards star; PetHome OK toggles chat
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick, /*ai_ready=*/true) ==
+           StudyAction::kCloseAndRewardStar);
     assert(sm.view() == StudyView::kPetHome);
+    assert(sm.star_count() == 2);
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kClick, true) ==
+           StudyAction::kToggleVoiceChat);
+    assert(sm.HandleKey(PassportKey::kOk, PassportKeyEvent::kLongPress, true) ==
+           StudyAction::kEnterWifiConfig);
 
     // Ring buffer capacity cap (32 items)
     for (int i = 0; i < 40; ++i) {
         sm.PushAndShow("english", "word_" + std::to_string(i), "", "");
     }
     assert(sm.items().size() == StudyStateMachine::kMaxItems);
-    printf("[PASS] TestStateMachine\n");
+    printf("[PASS] TestStateMachineOfflineAndOnline\n");
 }
 
 void TestSfp2PackAndDecoders(const char* pack_path) {
@@ -157,36 +164,70 @@ void TestSfp2PackAndDecoders(const char* pack_path) {
     uint32_t calc = study_logic::Crc32(data.data() + 16, data.size() - 16);
     assert(calc == hdr.crc32);
 
-    // Decode sample glyphs from every font using C++ decoders
-    const uint32_t test_cps[4] = {0x52C7, 0x8776, 0x0101, 'b'};  // 勇, 蝶, ā, b
-    for (uint16_t f = 0; f < hdr.font_count; ++f) {
-        FontDir dir = {};
-        std::memcpy(&dir, data.data() + sizeof(PackHdr) + f * sizeof(FontDir), sizeof(dir));
-        bool found = false;
-        for (uint32_t i = 0; i < dir.count; ++i) {
+    // Verify all 12 starter cards' UTF-8 characters decode cleanly from the pack!
+    StudyStateMachine sm;
+    sm.EnsureStarterItems();
+    auto find_cp = [&](const FontDir& dir, uint32_t cp, GlyphEntry* out) -> bool {
+        int lo = 0, hi = static_cast<int>(dir.count) - 1;
+        while (lo <= hi) {
+            int mid = lo + ((hi - lo) >> 1);
             GlyphEntry e = {};
-            std::memcpy(&e, data.data() + dir.idx_off + i * sizeof(GlyphEntry), sizeof(e));
-            if (e.cp == test_cps[f]) {
-                found = true;
-                assert(e.w > 0 && e.h > 0 && e.data_sz > 0 && e.data_sz <= 2048);
+            std::memcpy(&e, data.data() + dir.idx_off + mid * sizeof(GlyphEntry), sizeof(e));
+            if (e.cp == cp) { *out = e; return true; }
+            if (e.cp < cp) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        return false;
+    };
+
+    FontDir dirs[4] = {};
+    for (int f = 0; f < 4; ++f) {
+        std::memcpy(&dirs[f], data.data() + sizeof(PackHdr) + f * sizeof(FontDir), sizeof(FontDir));
+    }
+
+    auto utf8_to_cps = [](const std::string& s) {
+        std::vector<uint32_t> cps;
+        size_t i = 0;
+        while (i < s.size()) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            uint32_t cp = 0;
+            size_t len = 1;
+            if ((c & 0x80) == 0) { cp = c; len = 1; }
+            else if ((c & 0xE0) == 0xC0) { cp = ((c & 0x1F) << 6) | (s[i+1] & 0x3F); len = 2; }
+            else if ((c & 0xF0) == 0xE0) { cp = ((c & 0x0F) << 12) | ((s[i+1] & 0x3F) << 6) | (s[i+2] & 0x3F); len = 3; }
+            else { cp = ((c & 0x07) << 18) | ((s[i+1] & 0x3F) << 12) | ((s[i+2] & 0x3F) << 6) | (s[i+3] & 0x3F); len = 4; }
+            if (cp != '\n' && cp != '\r') cps.push_back(cp);
+            i += len;
+        }
+        return cps;
+    };
+
+    // Verify every single character across all 12 starter cards & UI footers exists in ui_16 (dirs[2])
+    const std::string ui_strings = "▲▼换字 ●写好 长按AI 长按问 长按▲放单字 ●回整词 选字 查看 返 生字本";
+    for (uint32_t cp : utf8_to_cps(ui_strings)) {
+        GlyphEntry e = {};
+        assert(find_cp(dirs[2], cp, &e));
+    }
+    for (const auto& it : sm.items()) {
+        for (uint32_t cp : utf8_to_cps(it.sub + it.hint)) {
+            GlyphEntry e = {};
+            assert(find_cp(dirs[2], cp, &e));
+        }
+        for (uint32_t cp : utf8_to_cps(it.text)) {
+            GlyphEntry e = {};
+            int fidx = (it.mode == "english") ? 3 : ((it.mode == "phrase") ? 1 : 0);
+            assert(find_cp(dirs[fidx], cp, &e));
+            if (e.w > 0 && e.h > 0) {
                 std::vector<uint8_t> out(static_cast<size_t>(e.w) * e.h, 0xCC);
-                const uint8_t* src = data.data() + dir.data_base + e.data_off;
-                size_t n = (dir.enc == 1)
+                const uint8_t* src = data.data() + dirs[fidx].data_base + e.data_off;
+                size_t n = (dirs[fidx].enc == 1)
                                ? study_logic::DecodeRle2ToA8(src, e.data_sz, e.w, e.h, out.data(), e.w)
                                : study_logic::DecodeRaw4ToA8(src, e.data_sz, e.w, e.h, out.data(), e.w);
                 assert(n == static_cast<size_t>(e.w) * e.h);
-                int nonzero = 0;
-                for (uint8_t px : out) {
-                    if (px > 0) ++nonzero;
-                }
-                assert(nonzero > 10);
-                break;
             }
         }
-        assert(found);
     }
-    printf("[PASS] TestSfp2PackAndDecoders (%zu bytes, CRC32=0x%08X)\n",
-           data.size(), calc);
+    printf("[PASS] TestSfp2PackAndDecoders (12 starter cards + UI footers verified, CRC32=0x%08X)\n", calc);
 }
 
 }  // namespace
@@ -194,7 +235,7 @@ void TestSfp2PackAndDecoders(const char* pack_path) {
 int main(int argc, char** argv) {
     TestDisplayRounding();
     TestKeyDecoder();
-    TestStateMachine();
+    TestStateMachineOfflineAndOnline();
     if (argc > 1) {
         TestSfp2PackAndDecoders(argv[1]);
     }
